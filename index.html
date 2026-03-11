@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐾 萌萌小围棋 (AI对战版)</title>
+<!-- 引入 TensorFlow.js 深度学习库 -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0"></script>
+<style>
+  /* 🌟 全新可爱风 UI 设计 🌟 */
+  body {
+    display: flex; flex-direction: column; align-items: center;
+    /* 软萌的粉蓝渐变背景 */
+    background: linear-gradient(135deg, #ffe0e9, #e0f2fe); 
+    font-family: 'Comic Sans MS', 'Nunito', 'Microsoft YaHei', sans-serif;
+    color: #5c4033; /* 温暖的深棕色字体 */
+    margin: 0; padding: 15px;
+    min-height: 100vh; box-sizing: border-box; overflow-x: hidden; 
+  }
+  .container { 
+    width: 100%; max-width: 600px; 
+    display: flex; flex-direction: column; align-items: center; 
+  }
+  h1 { 
+    margin: 0 0 15px 0; font-size: 24px; color: #ff758f; 
+    text-shadow: 2px 2px 0px #fff; letter-spacing: 2px;
+  }
+  
+  .hud-panel {
+    width: 100%; background: rgba(255, 255, 255, 0.85); 
+    border: 3px solid #ffb3c6; border-radius: 20px;
+    padding: 15px; margin-bottom: 20px; 
+    box-shadow: 0 8px 20px rgba(255, 117, 143, 0.15);
+  }
+  .hud-top { 
+    display: flex; justify-content: space-between; 
+    font-size: 16px; font-weight: bold; margin-bottom: 10px; color: #5c4033;
+  }
+  .hud-bottom { 
+    display: flex; justify-content: space-between; font-size: 12px; color: #888; 
+  }
+  
+  .thread-status { color: #ff99ac; font-weight: bold; }
+  
+  /* 萌萌的进度条 */
+  .progress-bg { 
+    width: 100%; height: 10px; background: #ffeeee; 
+    border-radius: 10px; margin-top: 10px; overflow: hidden; 
+    border: 1px solid #ffb3c6;
+  }
+  .progress-bar { 
+    height: 100%; width: 0%; 
+    background: linear-gradient(90deg, #ff9a9e, #fecfef); 
+    transition: width 0.2s ease; border-radius: 10px;
+  }
+
+  /* 棋盘稍微变得柔和一些 */
+  canvas {
+    width: 100%; aspect-ratio: 1 / 1;
+    background-color: #f7d59b; /* 更明亮的木板色 */
+    border-radius: 12px; border: 6px solid #d4a373;
+    box-shadow: 0 12px 25px rgba(139, 69, 19, 0.2);
+    touch-action: none; cursor: pointer; -webkit-tap-highlight-color: transparent; 
+  }
+  
+  .btn-group { 
+    margin-top: 20px; display: flex; gap: 10px; 
+    justify-content: center; width: 100%; flex-wrap: wrap;
+  }
+  button { 
+    padding: 12px 15px; font-size: 14px; border: none; border-radius: 25px; 
+    background-color: #a2d2ff; color: #fff; cursor: pointer; font-weight: bold; 
+    transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); flex: 1;
+    box-shadow: 0 5px 0 #7ebae6; min-width: 120px;
+  }
+  button:hover { transform: translateY(-3px); box-shadow: 0 8px 0 #7ebae6; }
+  button:active { transform: translateY(2px); box-shadow: 0 3px 0 #7ebae6; }
+  
+  button.danger { background-color: #ffafcc; box-shadow: 0 5px 0 #f095b6; }
+  button.danger:hover { box-shadow: 0 8px 0 #f095b6; }
+  button.danger:active { box-shadow: 0 3px 0 #f095b6; }
+  
+  button.restart { background-color: #b9fbc0; box-shadow: 0 5px 0 #92e09b; color: #38b000; }
+  button.restart:hover { box-shadow: 0 8px 0 #92e09b; }
+  button.restart:active { box-shadow: 0 3px 0 #92e09b; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>🐾 萌萌哒小围棋 (9x9) 🐾</h1>
+  
+  <div class="hud-panel">
+    <div class="hud-top">
+      <div>🧑 玩家: <span id="player-score">0</span> 颗糖果</div>
+      <div id="turn-indicator" style="color:#ff758f;">[ 正在叫醒 AI... ]</div>
+      <div>🤖 萌萌AI: <span id="ai-score">0</span> 颗糖果</div>
+    </div>
+    <div class="hud-bottom">
+      <span>玩家泡泡(气): <span id="player-liberties">0</span></span>
+      <span class="thread-status" id="ai-status">加载聪明的大脑中...</span>
+      <span>AI泡泡(气): <span id="ai-liberties">0</span></span>
+    </div>
+    <div class="progress-bg"><div class="progress-bar" id="calc-progress" style="width: 0%;"></div></div>
+  </div>
+
+  <canvas id="goBoard"></canvas>
+  
+  <div class="btn-group">
+    <button onclick="passTurn()">🐾 休息一下 (Pass)</button>
+    <button onclick="settleGame()" class="danger">🏁 算算谁赢啦</button>
+    <button onclick="resetGame()" class="restart">🔄 重新开局</button>
+  </div>
+</div>
+
+<script>
+  // ==========================================
+  // 前端系统与渲染层
+  // ==========================================
+  const canvas = document.getElementById("goBoard");
+  const ctx = canvas.getContext("2d");
+  
+  // 尺寸改为 9x9 适配下载的模型
+  const size = 9; 
+  const logicalSize = 800; 
+  canvas.width = logicalSize; canvas.height = logicalSize;
+  const padding = 50; const cellSize = (logicalSize - padding * 2) / (size - 1);
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  
+  let board =[]; let isPlayerTurn = false; 
+  let isGameOver = false;
+  let playerCaptures = 0, aiCaptures = 0; let animState =[]; 
+  
+  // ==========================================
+  // 读取本地真正的神经网络大脑！
+  // ==========================================
+  let aiModel = null;
+
+  async function initNeuralNetwork() {
+    let bar = document.getElementById("calc-progress");
+    let status = document.getElementById("ai-status");
+    
+    await tf.setBackend('webgl');
+    await tf.ready();
+    
+    status.innerText = "正在读取 web_model 里的图纸...";
+    bar.style.width = "40%";
+
+    try {
+      // 读取本地转换好的模型！
+      aiModel = await tf.loadLayersModel('./web_model/model.json');
+      
+      status.innerText = "给 AI 喂小饼干预热中...";
+      bar.style.width = "80%";
+
+      // 智能预热：不管模型需要什么输入形状，我们生成一个全0的对应形状塞进去
+      const inputShape = aiModel.inputs[0].shape.map(s => s === null ? 1 : s);
+      const dummyInput = tf.zeros(inputShape);
+      aiModel.predict(dummyInput).dispose();
+      dummyInput.dispose();
+
+      bar.style.width = "100%";
+      setTimeout(() => {
+          bar.style.width = "0%";
+          status.innerText = "✨ AI 已经完全清醒啦 ✨";
+          document.getElementById("turn-indicator").innerText = "[ 轮到玩家落子 ]";
+          document.getElementById("turn-indicator").style.color = "#ff758f";
+          isPlayerTurn = true;
+      }, 500);
+
+    } catch (error) {
+      console.error("加载模型失败:", error);
+      status.innerText = "加载失败啦！请检查 web_model 文件夹是不是放对啦~";
+      status.style.color = "red";
+    }
+  }
+
+  // ==========================================
+  // 围棋规则与 AI 落子逻辑
+  // ==========================================
+  
+  function copyBoard(b) { return b.map(row => [...row]); }
+
+  function getGroup(b, r, c) {
+    let color = b[r][c]; let visited = new Set(); let group =[]; let libs = 0;
+    let queue = [{r,c}]; visited.add(r+","+c);
+    while(queue.length>0) {
+      let curr = queue.pop(); group.push(curr);
+      for(let[dr,dc] of dirs) {
+        let nr=curr.r+dr, nc=curr.c+dc;
+        if(nr>=0&&nr<size&&nc>=0&&nc<size) {
+          let key = nr+","+nc;
+          if(b[nr][nc]===0 && !visited.has("L"+key)) { libs++; visited.add("L"+key); }
+          else if(b[nr][nc]===color && !visited.has(key)) { visited.add(key); queue.push({r:nr,c:nc}); }
+        }
+      }
+    } return { group, libs };
+  }
+
+  function applyMove(b, r, c, player) {
+    let nb = copyBoard(b); nb[r][c] = player;
+    let enemy = player===1?2:1; let capCount = 0;
+    for(let [dr,dc] of dirs) {
+      let nr=r+dr, nc=c+dc;
+      if(nr>=0&&nr<size&&nc>=0&&nc<size && nb[nr][nc]===enemy) {
+        let g = getGroup(nb, nr, nc);
+        if(g.libs===0) { g.group.forEach(s => { nb[s.r][s.c]=0; capCount++; }); }
+      }
+    }
+    let myG = getGroup(nb, r, c);
+    if(myG.libs===0 && capCount===0) return null; // 禁止自杀
+    return { board: nb, caps: capCount, myLibs: myG.libs };
+  }
+
+  function isTrueEye(b, r, c, player) {
+    let myStones=0;
+    for(let[dr,dc] of dirs) {
+      let nr=r+dr, nc=c+dc;
+      if(nr<0||nr>=size||nc<0||nc>=size || b[nr][nc]===player) myStones++;
+    } return myStones===4; 
+  }
+
+  async function triggerAiThink() {
+      document.getElementById("turn-indicator").innerText = "[ AI 正在托腮思考... ]";
+      document.getElementById("turn-indicator").style.color = "#a2d2ff";
+      document.getElementById("calc-progress").style.width = "50%";
+
+      await new Promise(r => setTimeout(r, 100)); // 让出进程渲染 UI
+
+      let bestMove = null;
+      let validMoves =[];
+
+      // 提取真实模型的智慧！
+      tf.tidy(() => {
+          let inputShape = aiModel.inputs[0].shape.map(s => s === null ? 1 : s);
+          let flatBoard = new Float32Array(tf.util.sizeFromShape(inputShape));
+          let i = 0;
+          for(let r=0; r<size; r++) {
+              for(let c=0; c<size; c++) {
+                  if (i < flatBoard.length) {
+                      // 将棋盘状态转化为 AI 认识的格式
+                      flatBoard[i] = board[r][c] === 2 ? 1 : (board[r][c] === 1 ? -1 : 0);
+                      i++;
+                  }
+              }
+          }
+          const inputTensor = tf.tensor(flatBoard, inputShape);
+          const heatmap = aiModel.predict(inputTensor);
+          const heatArray = heatmap.dataSync(); // 获取每个点的胜率/落子概率
+
+          for(let r=0; r<size; r++) for(let c=0; c<size; c++) {
+              if(board[r][c]===0 && !isTrueEye(board, r, c, 2)) {
+                  let res = applyMove(board, r, c, 2);
+                  if(res) {
+                      // AI 模型给出的神仙直觉 + 不吃亏的硬规则
+                      let nnScore = heatArray[r*size + c] * 1000; 
+                      let baseScore = nnScore + (res.caps * 50);
+                      validMoves.push({r, c, res, score: baseScore});
+                  }
+              }
+          }
+      });
+
+      if (validMoves.length > 0) {
+          validMoves.sort((a,b) => b.score - a.score);
+          bestMove = validMoves[0]; // 直接采用 AI 认为最好的一步
+      }
+
+      if (bestMove) {
+          let res = applyMove(board, bestMove.r, bestMove.c, 2);
+          board = res.board; aiCaptures += res.caps;
+          animState[bestMove.r][bestMove.c].scale = 0.1; animState[bestMove.r][bestMove.c].velocity = 0.2; 
+      }
+
+      document.getElementById("calc-progress").style.width = "100%";
+      setTimeout(() => {
+          document.getElementById("calc-progress").style.width = "0%";
+          document.getElementById("turn-indicator").innerText = "[ 轮到玩家落子 ]";
+          document.getElementById("turn-indicator").style.color = "#ff758f";
+          isPlayerTurn = true; updateUI();
+      }, 100);
+  }
+
+  // ==========================================
+  // 前端绘图与果冻动画 (完美保留！)
+  // ==========================================
+  function initBoard() {
+    board = Array(size).fill(0).map(() => Array(size).fill(0));
+    animState = Array(size).fill(0).map(() => Array(size).fill(0).map(() => ({
+      scale: 0, velocity: 0, target: 0, wobble: Math.random() * Math.PI * 2 
+    })));
+    playerCaptures = 0; aiCaptures = 0; isGameOver = false;
+    updateUI();
+  }
+
+  function animate() { updatePhysics(); draw(); requestAnimationFrame(animate); }
+  function updatePhysics() {
+    for (let r = 0; r < size; r++) { for (let c = 0; c < size; c++) {
+        let cell = animState[r][c]; let baseTarget = (board[r][c] !== 0) ? 1 : 0;
+        if (baseTarget === 1) { cell.wobble += 0.05; baseTarget += Math.sin(cell.wobble) * 0.02; }
+        let force = (baseTarget - cell.scale) * 0.15;
+        cell.velocity += force; cell.velocity *= 0.75; cell.scale += cell.velocity;
+        if (Math.abs(cell.velocity) < 0.001 && Math.abs(cell.scale - baseTarget) < 0.001) cell.scale = baseTarget;
+    }}
+  }
+  
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // 棋盘线
+    ctx.strokeStyle = "#c08c60"; ctx.lineWidth = 3; ctx.lineCap = "round";
+    for (let i=0; i<size; i++) {
+      const p = padding + i*cellSize;
+      ctx.beginPath(); ctx.moveTo(p, padding); ctx.lineTo(p, canvas.height-padding); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(padding, p); ctx.lineTo(canvas.width-padding, p); ctx.stroke();
+    }
+    // 9x9的星位 (通常有 5 个星位)
+    ctx.fillStyle = "#8b5e3c";
+    [[2,2],[2,6],[6,2],[6,6],[4,4]].forEach(([r,c]) => { 
+      ctx.beginPath(); ctx.arc(padding+c*cellSize, padding+r*cellSize, 6, 0, Math.PI*2); ctx.fill(); 
+    });
+    
+    let libertyMap = new Map();
+    for(let r=0; r<size; r++) for(let c=0; c<size; c++) if(board[r][c]!==0) libertyMap.set(`${r},${c}`, getGroup(board, r, c).libs);
+    
+    drawLinkLayer(1, "outline"); drawLinkLayer(2, "outline");
+    drawLinkLayer(1, "body", libertyMap); drawLinkLayer(2, "body", libertyMap);
+  }
+
+  function drawLinkLayer(color, layerType, libertyMap) {
+    const isBlack = (color === 1);
+    const bodyColor = isBlack ? "#333344" : "#fff8f0"; // 黑棋深灰不刺眼，白棋奶白色
+    const outlineColor = isBlack ? "#1a1a2e" : "#d1d1d1"; 
+    const baseStoneRadius = cellSize * 0.45; const baseBridgeWidth = cellSize * 0.2; const outlineThickness = 6; 
+    ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = (layerType === "outline") ? outlineColor : bodyColor;
+    
+    for (let r = 0; r < size; r++) { for (let c = 0; c < size; c++) {
+      if (board[r][c] !== color) continue;
+      let s1 = animState[r][c].scale; if (s1 < 0.1) continue;
+      if (c + 1 < size && board[r][c+1] === color) drawBond(r, c, r, c+1, s1, animState[r][c+1].scale, layerType, baseBridgeWidth, outlineThickness);
+      if (r + 1 < size && board[r+1][c] === color) drawBond(r, c, r+1, c, s1, animState[r+1][c].scale, layerType, baseBridgeWidth, outlineThickness);
+    }}
+    for (let r = 0; r < size; r++) { for (let c = 0; c < size; c++) {
+      if (board[r][c] !== color) continue;
+      let s = animState[r][c].scale; if (s < 0.1) continue;
+      const x = padding + c * cellSize; const y = padding + r * cellSize; const currentRadius = baseStoneRadius * s;
+      
+      if (layerType === "outline") { 
+          ctx.fillStyle = outlineColor; ctx.beginPath(); ctx.arc(x, y, currentRadius + outlineThickness/2, 0, Math.PI*2); ctx.fill(); 
+      } else { 
+          ctx.fillStyle = bodyColor; ctx.beginPath(); ctx.arc(x, y, currentRadius, 0, Math.PI*2); ctx.fill();
+          // 可爱的高光
+          ctx.fillStyle = "rgba(255,255,255,0.6)"; 
+          ctx.beginPath(); ctx.ellipse(x - currentRadius*0.3, y - currentRadius*0.3, currentRadius*0.3, currentRadius*0.15, Math.PI/4, 0, Math.PI*2); ctx.fill();
+          
+          let libs = libertyMap ? libertyMap.get(`${r},${c}`) : 4; 
+          drawFace(x, y, s, isBlack, libs); // 画可爱的小表情！
+      }
+    }}
+  }
+
+  function drawBond(r1, c1, r2, c2, s1, s2, layerType, baseWidth, thickness) {
+    if (s2 < 0.1) return;
+    const x1 = padding + c1 * cellSize; const y1 = padding + r1 * cellSize;
+    const x2 = padding + c2 * cellSize; const y2 = padding + r2 * cellSize;
+    let width = baseWidth * (s1 + s2) / 2; ctx.lineWidth = (layerType === "outline") ? width + thickness : width;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+
+  function drawFace(x, y, scale, isBlack, libs) {
+    if (scale < 0.6) return; 
+    const faceColor = isBlack ? "#888" : "#666"; // 柔和的表情颜色
+    ctx.fillStyle = faceColor; ctx.strokeStyle = faceColor;
+    ctx.lineWidth = 2.5 * scale; ctx.lineCap = "round";
+    let shakeX = 0, shakeY = 0;
+    // 如果气数只有1（快被吃掉了），就吓得发抖！
+    if (libs === 1) { shakeX = (Math.random()-0.5)*5; shakeY = (Math.random()-0.5)*5; }
+    
+    const cx = x + shakeX; const cy = y + shakeY; const eyeOffset = 10 * scale;
+    
+    if (libs === 1) { 
+      // 害怕的表情 >_<
+      ctx.beginPath(); ctx.moveTo(cx-eyeOffset-4, cy-4); ctx.lineTo(cx-eyeOffset, cy+2); ctx.lineTo(cx-eyeOffset-4, cy+8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+eyeOffset+4, cy-4); ctx.lineTo(cx+eyeOffset, cy+2); ctx.lineTo(cx+eyeOffset+4, cy+8); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy+12*scale, 4*scale, 0, Math.PI*2); ctx.stroke();
+    } else { 
+      // 乖巧的表情 
+      ctx.beginPath(); ctx.arc(cx - eyeOffset, cy - 2, 3*scale, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + eyeOffset, cy - 2, 3*scale, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy+3, 8*scale, 0.2, Math.PI-0.2); ctx.stroke();
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!isPlayerTurn || isGameOver) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    
+    const c = Math.floor((x - padding + cellSize/2) / cellSize);
+    const r = Math.floor((y - padding + cellSize/2) / cellSize);
+
+    if (r>=0 && r<size && c>=0 && c<size && board[r][c]===0) {
+      let res = applyMove(board, r, c, 1);
+      if(res) {
+        board = res.board; playerCaptures += res.caps;
+        animState[r][c].scale = 0.1; animState[r][c].velocity = 0.2; 
+        isPlayerTurn = false; updateUI();
+        triggerAiThink();
+      }
+    }
+  });
+
+  function calculateTotalLiberties() {
+    let blackLibs=0, whiteLibs=0;
+    for(let r=0;r<size;r++) {
+      for(let c=0;c<size;c++) {
+        if(board[r][c]===0) {
+          let pb=false, pw=false;
+          dirs.forEach(([dr,dc])=>{
+            let nr=r+dr, nc=c+dc; 
+            if(nr>=0 && nr<size && nc>=0 && nc<size){
+               if(board[nr][nc]===1) pb=true; 
+               if(board[nr][nc]===2) pw=true;
+            }
+          });
+          if(pb) blackLibs++; if(pw) whiteLibs++;
+        }
+      }
+    } 
+    return { blackLibs, whiteLibs };
+  }
+
+  function passTurn() { if(isPlayerTurn && !isGameOver) { isPlayerTurn=false; triggerAiThink(); } }
+
+  function settleGame() { 
+    if(isGameOver) return; 
+    let l = calculateTotalLiberties();
+    let totalBlack = playerCaptures + l.blackLibs; let totalWhite = aiCaptures + l.whiteLibs;
+    let msg = totalBlack > totalWhite ? "哇哦！你居然赢了萌萌 AI！🎉" : "呀，AI 凭借聪明的脑袋赢啦！🤖";
+    alert(`🎀 游戏结束啦 🎀\n\n🧑 你的糖果: ${totalBlack}\n🤖 AI的糖果: ${totalWhite}\n\n${msg}`); 
+    isGameOver=true; 
+  }
+
+  function resetGame() { initBoard(); }
+  
+  function updateUI() {
+    document.getElementById("player-score").innerText = playerCaptures; 
+    document.getElementById("ai-score").innerText = aiCaptures;
+    let l = calculateTotalLiberties();
+    document.getElementById("player-liberties").innerText = l.blackLibs; 
+    document.getElementById("ai-liberties").innerText = l.whiteLibs;
+  }
+
+  // 启动：加载模型与引擎
+  initBoard(); 
+  animate(); 
+  initNeuralNetwork(); 
+</script>
+</body>
+</html>
