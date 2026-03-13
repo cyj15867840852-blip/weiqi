@@ -6,7 +6,7 @@
 <title>🐾 萌萌小围棋 (AI觉醒版)</title>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0"></script>
 <style>
-  /* 萌系 UI 保持不变 */
+  /* 萌系 UI 完全保持不变 */
   body {
     display: flex; flex-direction: column; align-items: center;
     background: linear-gradient(135deg, #ffe0e9, #e0f2fe); 
@@ -77,6 +77,9 @@
   let isGameOver = false;
   let playerCaptures = 0, aiCaptures = 0; let animState =[]; 
   let aiModel = null;
+  
+  // 新增：打劫（Ko）规则记录点
+  let koPoint = null; 
 
   async function initNeuralNetwork() {
     let bar = document.getElementById("calc-progress");
@@ -93,6 +96,7 @@
       status.innerText = "视觉皮层重建中 (SevenPlane)...";
       bar.style.width = "80%";
 
+      // 获取模型输入格式进行预热
       const inputShape = aiModel.inputs[0].shape.map(s => s === null ? 1 : s);
       const dummyInput = tf.zeros(inputShape);
       aiModel.predict(dummyInput).dispose();
@@ -109,7 +113,7 @@
 
     } catch (error) {
       console.error(error);
-      status.innerText = "加载失败啦！";
+      status.innerText = "加载失败啦！(请确保部署在本地服务器环境)";
       status.style.color = "red";
     }
   }
@@ -117,6 +121,7 @@
   function copyBoard(b) { return b.map(row => [...row]); }
 
   function getGroup(b, r, c) {
+    if(b[r][c] === 0) return { group:[], libs: 0 };
     let color = b[r][c]; let visited = new Set(); let group =[]; let libs = 0;
     let queue = [{r,c}]; visited.add(r+","+c);
     while(queue.length>0) {
@@ -134,57 +139,88 @@
 
   function applyMove(b, r, c, player) {
     let nb = copyBoard(b); nb[r][c] = player;
-    let enemy = player===1?2:1; let capCount = 0;
+    let enemy = player===1?2:1; 
+    let capCount = 0;
+    let capturedStones =[];
+
+    // 检查吃子
     for(let [dr,dc] of dirs) {
       let nr=r+dr, nc=c+dc;
       if(nr>=0&&nr<size&&nc>=0&&nc<size && nb[nr][nc]===enemy) {
         let g = getGroup(nb, nr, nc);
-        if(g.libs===0) { g.group.forEach(s => { nb[s.r][s.c]=0; capCount++; }); }
+        if(g.libs===0) { 
+            g.group.forEach(s => { 
+                nb[s.r][s.c]=0; 
+                capCount++; 
+                capturedStones.push({r: s.r, c: s.c});
+            }); 
+        }
       }
     }
+    
+    // 检查自杀
     let myG = getGroup(nb, r, c);
     if(myG.libs===0 && capCount===0) return null; // 禁止自杀
-    return { board: nb, caps: capCount, myLibs: myG.libs };
+    
+    // 更新打劫点 (如果刚好只吃了一个子，且自己下的这个子气也变成1)
+    let newKo = null;
+    if (capCount === 1 && myG.libs === 1) {
+        newKo = capturedStones[0];
+    }
+
+    return { board: nb, caps: capCount, myLibs: myG.libs, newKo: newKo };
   }
 
   function isTrueEye(b, r, c, player) {
-    let myStones=0;
+    let myStones=0; let corners=0; let enemyCorners=0;
     for(let[dr,dc] of dirs) {
       let nr=r+dr, nc=c+dc;
       if(nr<0||nr>=size||nc<0||nc>=size || b[nr][nc]===player) myStones++;
-    } return myStones===4; 
+    } 
+    if(myStones !== 4) return false;
+    
+    // 严格检查对角线，防止假眼
+    const diagonals = [[-1,-1],[-1,1],[1,-1],[1,1]];
+    let maxEnemy = (r===0||r===size-1||c===0||c===size-1) ? 0 : 1;
+    for(let [dr,dc] of diagonals) {
+        let nr=r+dr, nc=c+dc;
+        if(nr>=0&&nr<size&&nc>=0&&nc<size && b[nr][nc]!==player && b[nr][nc]!==0) {
+            enemyCorners++;
+        }
+    }
+    return enemyCorners <= maxEnemy; 
   }
 
-  // 修复漏洞1：正确的七层数据编码器 (让 AI 睁开眼睛)
+  // 完美重构：标准的 SevenPlane 编码器，让 AI 真正看清盘面
   function encodeBoard(b, aiColor) {
     let shape = aiModel.inputs[0].shape.map(s => s === null ? 1 : s);
-    let isChannelsLast = shape.length === 4 ? (shape[3] !== 9 && shape[3] !== 19) : true; 
-    let C = shape.length === 4 ? (isChannelsLast ? shape[3] : shape[1]) : 1;
+    // 自动适配通道在后(NHWC)还是在前(NCHW)
+    let isChannelsLast = shape.length === 4 ? (shape[3] > 1) : true; 
+    let channels = isChannelsLast ? shape[3] : shape[1];
+    
+    // 初始化全零矩阵
     let flatBoard = new Float32Array(tf.util.sizeFromShape(shape));
     
     for(let r=0; r<size; r++) {
         for(let c=0; c<size; c++) {
             let color = b[r][c];
             if (color === 0) continue;
+            
             let libs = getGroup(b, r, c).libs;
-            let p = -1;
+            let isMe = (color === aiColor);
             
-            // 按照书里的 SevenPlane 格式铺设数据
-            if (C === 7) {
-                let isAI = (color === aiColor);
-                if (isAI) {
-                    if (libs === 1) p = 0; else if (libs === 2) p = 1; else p = 2;
-                } else {
-                    if (libs === 1) p = 3; else if (libs === 2) p = 4; else p = 5;
-                }
-            }
+            // Plane 0,1,2: 己方1,2,3+气
+            // Plane 3,4,5: 敌方1,2,3+气
+            let planeOffset = isMe ? 0 : 3;
+            let p = planeOffset + (libs === 1 ? 0 : (libs === 2 ? 1 : 2));
             
-            if (p !== -1) {
-                let idx = isChannelsLast ? (r * size * C + c * C + p) : (p * size * size + r * size + c);
-                flatBoard[idx] = 1;
-            } else {
-                let idx = isChannelsLast ? (r * size * C + c * C + 0) : (0 * size * size + r * size + c);
-                flatBoard[idx] = (color === aiColor) ? 1 : -1;
+            if (channels >= 6 && p < channels) {
+                let idx = isChannelsLast ? (r * size * channels + c * channels + p) : (p * size * size + r * size + c);
+                flatBoard[idx] = 1.0;
+            } else if (channels === 1) {
+                // 如果是极简1通道模型，只传黑白子
+                let idx = isChannelsLast ? (r * size * channels + c * channels + 0) : (r * size + c);
+                flatBoard[idx] = isMe ? 1 : -1;
             }
         }
     }
@@ -192,106 +228,79 @@
   }
 
   async function triggerAiThink() {
-      document.getElementById("turn-indicator").innerText = "[ AI 正在运转战术核心... ]";
+      document.getElementById("turn-indicator").innerText = "[ AI 正在思考绝妙的一手... ]";
       document.getElementById("turn-indicator").style.color = "#a2d2ff";
       document.getElementById("calc-progress").style.width = "50%";
 
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 50)); // 让UI刷新
 
-      let heatArray = new Array(size * size).fill(0);
+      let policyData =[];
       try {
           tf.tidy(() => {
               const inputTensor = encodeBoard(board, 2);
-              const heatmap = aiModel.predict(inputTensor);
-              const data = heatmap.dataSync(); 
-              
-              // 归一化网络输出，防止数据漂移
-              let minV = Infinity, maxV = -Infinity;
-              for(let i=0; i<data.length; i++) {
-                  if(data[i] > maxV) maxV = data[i];
-                  if(data[i] < minV) minV = data[i];
-              }
-              let range = (maxV - minV) || 1;
-              for(let i=0; i<data.length; i++) {
-                  heatArray[i] = (data[i] - minV) / range; 
-              }
+              const output = aiModel.predict(inputTensor);
+              // 如果模型同时输出策略和价值网络，取策略网络(通常是数组里的第一个)
+              const policyTensor = Array.isArray(output) ? output[0] : output; 
+              policyData = Array.from(policyTensor.dataSync());
           });
-      } catch(e) { console.error("网络读取异常", e); }
+      } catch(e) { console.error("网络推理异常", e); }
 
-      let validMoves =[];
+      let bestMove = null;
+      let highestProb = -Infinity;
+
+      // 核心修复：不要给网络概率加上主观分数！只过滤非法点！
       for(let r=0; r<size; r++) {
           for(let c=0; c<size; c++) {
-              if(board[r][c]===0 && !isTrueEye(board, r, c, 2)) {
-                  let res = applyMove(board, r, c, 2);
-                  if(res) {
-                      // 1. 获取网络大局观分数 (0 ~ 1000)
-                      let baseScore = (heatArray[r*size + c] || 0) * 1000;
-                      
-                      // ======================================
-                      // 修复漏洞2：战术防呆模拟器 (防止乱送死)
-                      // ======================================
-                      baseScore += res.caps * 500; // 看到能吃子就去吃
-                      
-                      // 严禁自寻死路 (下完这步自己只剩 1 气，等于送给人类吃)
-                      if (res.myLibs === 1) baseScore -= 2000; 
-                      
-                      // 预测未来：如果 AI 下这里，人类下一步能不能疯狂吃子报复？
-                      let humanMaxCaps = 0;
-                      for(let hr=0; hr<size; hr++) {
-                          for(let hc=0; hc<size; hc++) {
-                              if(res.board[hr][hc] === 0) {
-                                  let hRes = applyMove(res.board, hr, hc, 1);
-                                  if (hRes && hRes.caps > humanMaxCaps) {
-                                      humanMaxCaps = hRes.caps;
-                                  }
-                              }
-                          }
-                      }
-                      // 极度害怕被吃，如果人类能吃子，疯狂扣分直接否定这步棋
-                      baseScore -= humanMaxCaps * 800; 
-                      
-                      // 稍微鼓励走安全宽广的地方
-                      baseScore += res.myLibs * 5;
+              if(board[r][c] !== 0) continue; // 有子不落
+              if(isTrueEye(board, r, c, 2)) continue; // 绝对不填自己的真眼
+              
+              // 打劫规则检查
+              if(koPoint && koPoint.r === r && koPoint.c === c) continue; 
 
-                      validMoves.push({r, c, res, score: baseScore});
-                  }
+              let res = applyMove(board, r, c, 2);
+              if(!res) continue; // 不能自杀
+
+              // 取出神经网络给出的概率 (如果是 [1, 81] 或者 [1, 82])
+              let prob = policyData[r * size + c] || 0; 
+
+              if (prob > highestProb) {
+                  highestProb = prob;
+                  bestMove = { r, c, res };
               }
           }
       }
 
-      let bestMove = null;
-      if (validMoves.length > 0) {
-          validMoves.sort((a,b) => b.score - a.score);
-          bestMove = validMoves[0]; 
-      }
-
-      // 如果满盘都是送死的烂棋，AI 宁可停一手也不送头
-      if (bestMove && bestMove.score > -1500) {
-          let res = applyMove(board, bestMove.r, bestMove.c, 2);
-          board = res.board; aiCaptures += res.caps;
-          animState[bestMove.r][bestMove.c].scale = 0.1; animState[bestMove.r][bestMove.c].velocity = 0.2; 
+      // 如果最高概率太低，或者全盘没有好棋，AI选择Pass
+      if (bestMove && highestProb > -999) { // 只要有合法点就走
+          board = bestMove.res.board; 
+          aiCaptures += bestMove.res.caps;
+          koPoint = bestMove.res.newKo; // 更新打劫状态
+          
+          animState[bestMove.r][bestMove.c].scale = 0.1; 
+          animState[bestMove.r][bestMove.c].velocity = 0.2; 
       } else {
-          document.getElementById("turn-indicator").innerText = "[ AI 害怕地停了一手 ]";
+          koPoint = null;
+          document.getElementById("turn-indicator").innerText = "[ AI 决定休息一手 (Pass) ]";
       }
 
       document.getElementById("calc-progress").style.width = "100%";
       setTimeout(() => {
           document.getElementById("calc-progress").style.width = "0%";
-          if(bestMove && bestMove.score > -1500){
+          if(bestMove){
               document.getElementById("turn-indicator").innerText = "[ 轮到玩家落子 ]";
               document.getElementById("turn-indicator").style.color = "#ff758f";
           }
           isPlayerTurn = true; updateUI();
-      }, 100);
+      }, 300);
   }
 
-  // 动画与渲染层保持原样
+  // ============== 以下动画与渲染层完全保持原样 ==============
   function initBoard() {
     board = Array(size).fill(0).map(() => Array(size).fill(0));
     animState = Array(size).fill(0).map(() => Array(size).fill(0).map(() => ({
       scale: 0, velocity: 0, target: 0, wobble: Math.random() * Math.PI * 2 
     })));
-    playerCaptures = 0; aiCaptures = 0; isGameOver = false;
+    playerCaptures = 0; aiCaptures = 0; isGameOver = false; koPoint = null;
     updateUI();
   }
 
@@ -392,9 +401,13 @@
     const r = Math.floor((y - padding + cellSize/2) / cellSize);
 
     if (r>=0 && r<size && c>=0 && c<size && board[r][c]===0) {
+      // 玩家防打劫
+      if(koPoint && koPoint.r === r && koPoint.c === c) return;
+      
       let res = applyMove(board, r, c, 1);
       if(res) {
         board = res.board; playerCaptures += res.caps;
+        koPoint = res.newKo; // 玩家走后更新打劫状态
         animState[r][c].scale = 0.1; animState[r][c].velocity = 0.2; 
         isPlayerTurn = false; updateUI();
         triggerAiThink();
@@ -422,7 +435,13 @@
     return { blackLibs, whiteLibs };
   }
 
-  function passTurn() { if(isPlayerTurn && !isGameOver) { isPlayerTurn=false; triggerAiThink(); } }
+  function passTurn() { 
+      if(isPlayerTurn && !isGameOver) { 
+          koPoint = null;
+          isPlayerTurn=false; 
+          triggerAiThink(); 
+      } 
+  }
 
   function settleGame() { 
     if(isGameOver) return; 
